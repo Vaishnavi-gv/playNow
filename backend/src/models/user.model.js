@@ -27,12 +27,18 @@ const userSchema = new Schema(
             trim: true, 
             index: true
         },
+        role: {
+            type: String,
+            enum: ["user", "creator", "admin"],
+            default: "user"
+        },
         avatar: {
             type: String, // cloudinary url
-            required: true,
+            default: "",
         },
         coverImage: {
             type: String, // cloudinary url
+            default: "",
         },
         watchHistory: [
             {
