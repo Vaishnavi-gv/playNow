@@ -5,6 +5,12 @@ import { ApiResponse } from "../utils/ApiResponse.js"
 import { Subscription } from "../models/subscription.model.js"
 import { User } from "../models/user.model.js"
 
+const parseSort = (sortBy, sortOrder, allowedSortFields, fallback) => {
+    const field = allowedSortFields.includes(sortBy) ? sortBy : fallback
+    const dir = String(sortOrder).toLowerCase() === "asc" ? 1 : -1
+    return { [field]: dir }
+}
+
 const subscribeChannel = asyncHandler(async (req, res) => {
     const { id } = req.params // channel id
     if (!mongoose.isValidObjectId(id)) throw new ApiError(400, "Invalid channel id")
@@ -44,59 +50,75 @@ const listChannelSubscribers = asyncHandler(async (req, res) => {
 
     const page = Math.max(1, Number(req.query.page) || 1)
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10))
-    const skip = (page - 1) * limit
+    const sort = parseSort(req.query.sortBy, req.query.sortOrder, ["createdAt"], "createdAt")
 
-    const [docs, total] = await Promise.all([
-        Subscription.find({ channel: id })
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .populate("subscriber", "username fullName avatar role"),
-        Subscription.countDocuments({ channel: id })
-    ])
+    const pipeline = [
+        { $match: { channel: new mongoose.Types.ObjectId(id) } },
+        { $sort: sort },
+        {
+            $lookup: {
+                from: "users",
+                localField: "subscriber",
+                foreignField: "_id",
+                as: "subscriber"
+            }
+        },
+        { $unwind: { path: "$subscriber", preserveNullAndEmptyArrays: true } },
+        {
+            $project: {
+                channel: 1,
+                createdAt: 1,
+                subscriber: {
+                    _id: 1,
+                    username: 1,
+                    fullName: 1,
+                    avatar: 1,
+                    role: 1
+                }
+            }
+        }
+    ]
 
-    return res.status(200).json(
-        new ApiResponse(
-            200,
-            {
-                docs,
-                totalDocs: total,
-                limit,
-                page,
-                totalPages: Math.ceil(total / limit) || 1
-            },
-            "Subscribers fetched"
-        )
-    )
+    const aggregate = Subscription.aggregate(pipeline)
+    const result = await Subscription.aggregatePaginate(aggregate, { page, limit })
+    return res.status(200).json(new ApiResponse(200, result, "Subscribers fetched"))
 })
 
 const listMySubscriptions = asyncHandler(async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1)
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10))
-    const skip = (page - 1) * limit
+    const sort = parseSort(req.query.sortBy, req.query.sortOrder, ["createdAt"], "createdAt")
 
-    const [docs, total] = await Promise.all([
-        Subscription.find({ subscriber: req.user?._id })
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .populate("channel", "username fullName avatar role"),
-        Subscription.countDocuments({ subscriber: req.user?._id })
-    ])
+    const pipeline = [
+        { $match: { subscriber: new mongoose.Types.ObjectId(req.user?._id) } },
+        { $sort: sort },
+        {
+            $lookup: {
+                from: "users",
+                localField: "channel",
+                foreignField: "_id",
+                as: "channel"
+            }
+        },
+        { $unwind: { path: "$channel", preserveNullAndEmptyArrays: true } },
+        {
+            $project: {
+                subscriber: 1,
+                createdAt: 1,
+                channel: {
+                    _id: 1,
+                    username: 1,
+                    fullName: 1,
+                    avatar: 1,
+                    role: 1
+                }
+            }
+        }
+    ]
 
-    return res.status(200).json(
-        new ApiResponse(
-            200,
-            {
-                docs,
-                totalDocs: total,
-                limit,
-                page,
-                totalPages: Math.ceil(total / limit) || 1
-            },
-            "My subscriptions fetched"
-        )
-    )
+    const aggregate = Subscription.aggregate(pipeline)
+    const result = await Subscription.aggregatePaginate(aggregate, { page, limit })
+    return res.status(200).json(new ApiResponse(200, result, "My subscriptions fetched"))
 })
 
 export { subscribeChannel, unsubscribeChannel, listChannelSubscribers, listMySubscriptions }

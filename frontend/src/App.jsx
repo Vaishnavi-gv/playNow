@@ -5,6 +5,8 @@ function App() {
   const [authUser, setAuthUser] = useState(null);
   const [authMode, setAuthMode] = useState("login"); // "login" | "register"
   const [view, setView] = useState("home"); // "home" | "subscriptions"
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchMode, setIsSearchMode] = useState(false);
   const [authForm, setAuthForm] = useState({
     fullName: "",
     email: "",
@@ -140,7 +142,9 @@ function App() {
   const fetchVideos = async (targetPage = page) => {
     setMessage("");
     try {
-      const data = await apiRequest(`/videos?page=${targetPage}&limit=${limit}`);
+      const data = await apiRequest(
+        `/videos?page=${targetPage}&limit=${limit}&sortBy=createdAt&sortOrder=desc`
+      );
       const result = data?.data;
       setVideos(result?.docs || result?.results || []);
       setPage(targetPage);
@@ -148,6 +152,52 @@ function App() {
       setMessage(err.message);
     }
   };
+
+  const fetchSearch = async (q, targetPage = 1) => {
+    setMessage("");
+    try {
+      const data = await apiRequest(
+        `/videos/search?q=${encodeURIComponent(
+          q
+        )}&page=${targetPage}&limit=${limit}&sortBy=score&sortOrder=desc`
+      );
+      const result = data?.data;
+      setVideos(result?.docs || result?.results || []);
+      setPage(targetPage);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const runSearch = async () => {
+    const q = searchQuery.trim();
+    if (!q) {
+      setIsSearchMode(false);
+      setPage(1);
+      await fetchVideos(1);
+      return;
+    }
+    setIsSearchMode(true);
+    await fetchSearch(q, 1);
+  };
+
+  // Debounced search while typing
+  useEffect(() => {
+    const q = searchQuery.trim();
+    const t = setTimeout(() => {
+      if (!q) {
+        if (isSearchMode) {
+          setIsSearchMode(false);
+          fetchVideos(1);
+        }
+        return;
+      }
+      setIsSearchMode(true);
+      fetchSearch(q, 1);
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
 
   const openVideo = async (id) => {
     setSelectedVideoId(id);
@@ -278,10 +328,16 @@ function App() {
         <div style={searchBox}>
           <input
             style={searchInput}
-            placeholder="Search (UI only)"
-            disabled
+            placeholder="Search videos..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") runSearch();
+            }}
           />
-          <button style={searchButton}>🔍</button>
+          <button style={searchButton} onClick={runSearch} type="button">
+            🔍
+          </button>
         </div>
 
         <div style={topRight}>
@@ -624,20 +680,30 @@ function App() {
                   <h2 style={cardTitle}>Videos</h2>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <button
-                      onClick={() => fetchVideos(Math.max(1, page - 1))}
+                      onClick={() =>
+                        isSearchMode
+                          ? fetchSearch(searchQuery.trim(), Math.max(1, page - 1))
+                          : fetchVideos(Math.max(1, page - 1))
+                      }
                       style={secondaryButton}
                     >
                       ◀
                     </button>
-                    <span style={mutedText}>Page {page}</span>
+                    <span style={mutedText}>
+                      {isSearchMode ? "Results" : "Page"} {page}
+                    </span>
                     <button
-                      onClick={() => fetchVideos(page + 1)}
+                      onClick={() =>
+                        isSearchMode
+                          ? fetchSearch(searchQuery.trim(), page + 1)
+                          : fetchVideos(page + 1)
+                      }
                       style={secondaryButton}
                     >
                       ▶
                     </button>
                     <button
-                      onClick={() => fetchVideos(1)}
+                      onClick={() => (isSearchMode ? runSearch() : fetchVideos(1))}
                       style={secondaryButton}
                     >
                       Refresh
