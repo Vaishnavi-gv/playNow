@@ -44,4 +44,7 @@ const videoSchema = new Schema(
 
 videoSchema.plugin(mongooseAggregatePaginate)
 
+// Search index (MongoDB text search)
+videoSchema.index({ title: "text", description: "text" })
+
 export const Video = mongoose.model("Video", videoSchema)

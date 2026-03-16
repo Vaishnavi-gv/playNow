@@ -1,19 +1,29 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { apiFormRequest, apiRequest } from "./api";
 
 function App() {
   const [authUser, setAuthUser] = useState(null);
-  const [mode, setMode] = useState("login"); // "login" or "register"
-  const [form, setForm] = useState({
+  const [authMode, setAuthMode] = useState("login"); // "login" | "register"
+  const [view, setView] = useState("home"); // "home" | "subscriptions"
+  const [authForm, setAuthForm] = useState({
     fullName: "",
     email: "",
     username: "",
     password: "",
   });
   const [message, setMessage] = useState("");
+  const [videos, setVideos] = useState([]);
   const [page, setPage] = useState(1);
-  const [limit, setLimit] = useState(10);
-  const [videos, setVideos] = useState(null);
+  const [limit] = useState(12);
+  const [selectedVideoId, setSelectedVideoId] = useState(null);
+  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [likesCount, setLikesCount] = useState(0);
+  const [liked, setLiked] = useState(false); // optimistic UI; backend returns truth
+  const [comments, setComments] = useState([]);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [channelSubscribed, setChannelSubscribed] = useState(false);
+  const [channelSubscribersCount, setChannelSubscribersCount] = useState(0);
+  const [mySubscriptions, setMySubscriptions] = useState([]);
   const [upload, setUpload] = useState({
     title: "",
     description: "",
@@ -22,32 +32,33 @@ function App() {
     thumbnail: null,
   });
 
-  const handleChange = (e) => {
-    setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleAuthChange = (e) => {
+    const { name, value } = e.target;
+    setAuthForm((prev) => ({ ...prev, [name]: value }));
   };
 
   const handleUploadChange = (e) => {
     const { name, value, files } = e.target;
     if (files) {
       setUpload((prev) => ({ ...prev, [name]: files[0] || null }));
-      return;
+    } else {
+      setUpload((prev) => ({ ...prev, [name]: value }));
     }
-    setUpload((prev) => ({ ...prev, [name]: value }));
   };
 
   const handleRegister = async (e) => {
     e.preventDefault();
     setMessage("");
-
     try {
       const fd = new FormData();
-      fd.append("fullName", form.fullName);
-      fd.append("email", form.email);
-      fd.append("username", form.username);
-      fd.append("password", form.password);
+      fd.append("fullName", authForm.fullName);
+      fd.append("email", authForm.email);
+      fd.append("username", authForm.username);
+      fd.append("password", authForm.password);
 
       await apiFormRequest("/users/register", fd);
-      setMessage("Registered successfully!");
+      setMessage("Registered successfully, you can now log in.");
+      setAuthMode("login");
     } catch (err) {
       setMessage(err.message);
     }
@@ -60,8 +71,8 @@ function App() {
       const data = await apiRequest("/users/login", {
         method: "POST",
         body: JSON.stringify({
-          email: form.email,
-          password: form.password,
+          email: authForm.email,
+          password: authForm.password,
         }),
       });
       const user = data?.data?.user || null;
@@ -77,7 +88,16 @@ function App() {
     try {
       await apiRequest("/users/logout", { method: "POST" });
       setAuthUser(null);
-      setVideos(null);
+      setVideos([]);
+      setSelectedVideoId(null);
+      setSelectedVideo(null);
+      setLikesCount(0);
+      setLiked(false);
+      setComments([]);
+      setCommentDraft("");
+      setChannelSubscribed(false);
+      setChannelSubscribersCount(0);
+      setMySubscriptions([]);
       setUpload({
         title: "",
         description: "",
@@ -86,17 +106,6 @@ function App() {
         thumbnail: null,
       });
       setMessage("Logged out");
-    } catch (err) {
-      setMessage(err.message);
-    }
-  };
-
-  const fetchVideos = async () => {
-    setMessage("");
-    try {
-      const data = await apiRequest(`/videos?page=${page}&limit=${limit}`);
-      setVideos(data?.data || null);
-      setMessage("Videos loaded");
     } catch (err) {
       setMessage(err.message);
     }
@@ -115,400 +124,940 @@ function App() {
 
       await apiFormRequest("/videos", fd);
       setMessage("Video uploaded");
-      await fetchVideos();
+      setUpload({
+        title: "",
+        description: "",
+        duration: "",
+        videoFile: null,
+        thumbnail: null,
+      });
+      fetchVideos(1);
     } catch (err) {
       setMessage(err.message);
     }
   };
 
-  const onSubmit = mode === "register" ? handleRegister : handleLogin;
+  const fetchVideos = async (targetPage = page) => {
+    setMessage("");
+    try {
+      const data = await apiRequest(`/videos?page=${targetPage}&limit=${limit}`);
+      const result = data?.data;
+      setVideos(result?.docs || result?.results || []);
+      setPage(targetPage);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const openVideo = async (id) => {
+    setSelectedVideoId(id);
+    setSelectedVideo(null);
+    setComments([]);
+    setLikesCount(0);
+    setChannelSubscribed(false);
+    setChannelSubscribersCount(0);
+
+    try {
+      const v = await apiRequest(`/videos/${id}`);
+      const video = v?.data;
+      setSelectedVideo(video);
+
+      const lc = await apiRequest(`/videos/${id}/likes/count`);
+      setLikesCount(lc?.data?.likesCount ?? 0);
+
+      const cs = await apiRequest(`/videos/${id}/comments?page=1&limit=10`);
+      setComments(cs?.data?.docs || []);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const toggleLike = async () => {
+    if (!authUser || !selectedVideoId) {
+      setMessage("Login to like videos");
+      return;
+    }
+    try {
+      const data = await apiRequest(`/videos/${selectedVideoId}/like`, {
+        method: "POST",
+      });
+      setLiked(Boolean(data?.data?.liked));
+      setLikesCount(Number(data?.data?.likesCount ?? likesCount));
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const addComment = async () => {
+    if (!authUser || !selectedVideoId) {
+      setMessage("Login to comment");
+      return;
+    }
+    if (!commentDraft.trim()) return;
+    try {
+      const data = await apiRequest(`/videos/${selectedVideoId}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ content: commentDraft }),
+      });
+      setComments((prev) => [data?.data, ...prev].filter(Boolean));
+      setCommentDraft("");
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const deleteComment = async (commentId) => {
+    if (!authUser) return;
+    try {
+      await apiRequest(`/comments/${commentId}`, { method: "DELETE" });
+      setComments((prev) => prev.filter((c) => c?._id !== commentId));
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const subscribeToChannel = async (channelId) => {
+    if (!authUser) {
+      setMessage("Login to subscribe");
+      return;
+    }
+    try {
+      const data = await apiRequest(`/channels/${channelId}/subscribe`, {
+        method: "POST",
+      });
+      setChannelSubscribed(true);
+      setChannelSubscribersCount(Number(data?.data?.subscribersCount ?? 0));
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const unsubscribeFromChannel = async (channelId) => {
+    if (!authUser) return;
+    try {
+      const data = await apiRequest(`/channels/${channelId}/unsubscribe`, {
+        method: "POST",
+      });
+      setChannelSubscribed(false);
+      setChannelSubscribersCount(Number(data?.data?.subscribersCount ?? 0));
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const loadMySubscriptions = async () => {
+    if (!authUser) {
+      setMySubscriptions([]);
+      return;
+    }
+    try {
+      const data = await apiRequest("/users/me/subscriptions?page=1&limit=50");
+      setMySubscriptions(data?.data?.docs || []);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  useEffect(() => {
+    fetchVideos(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const showUploadPanel =
+    authUser && (authUser.role === "creator" || authUser.role === "admin");
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#0f172a",
-        color: "#e5e7eb",
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: authUser ? 760 : 420,
-          padding: "2rem",
-          background: "#020617",
-          borderRadius: "1rem",
-          boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <h1 style={{ fontSize: "1.75rem", marginBottom: "1rem", flex: 1 }}>
-            PlayNow
-          </h1>
-          {authUser && (
-            <button
-              onClick={handleLogout}
-              style={{
-                marginBottom: "1rem",
-                padding: "0.45rem 0.75rem",
-                borderRadius: "999px",
-                border: "1px solid #1f2937",
-                background: "transparent",
-                color: "#e5e7eb",
-                cursor: "pointer",
-              }}
-            >
-              Logout
-            </button>
-          )}
+    <div style={appShell}>
+      {/* Top bar (YouTube-like) */}
+      <header style={topBar}>
+        <div style={topLeft}>
+          <div style={logoCircle}>▶</div>
+          <span style={logoText}>PlayNow</span>
         </div>
 
-        {!authUser ? (
-          <>
-            <div
-              style={{
-                display: "flex",
-                marginBottom: "1.5rem",
-                borderRadius: "999px",
-                background: "#020617",
-                padding: 4,
-                border: "1px solid #1f2937",
-              }}
-            >
-              <button
-                onClick={() => setMode("login")}
-                style={{
-                  flex: 1,
-                  padding: "0.5rem 0",
-                  borderRadius: "999px",
-                  border: "none",
-                  background: mode === "login" ? "#2563eb" : "transparent",
-                  color: mode === "login" ? "#f9fafb" : "#9ca3af",
-                  cursor: "pointer",
-                }}
-              >
-                Login
-              </button>
-              <button
-                onClick={() => setMode("register")}
-                style={{
-                  flex: 1,
-                  padding: "0.5rem 0",
-                  borderRadius: "999px",
-                  border: "none",
-                  background: mode === "register" ? "#2563eb" : "transparent",
-                  color: mode === "register" ? "#f9fafb" : "#9ca3af",
-                  cursor: "pointer",
-                }}
-              >
-                Register
-              </button>
-            </div>
+        <div style={searchBox}>
+          <input
+            style={searchInput}
+            placeholder="Search (UI only)"
+            disabled
+          />
+          <button style={searchButton}>🔍</button>
+        </div>
 
-            <form
-              onSubmit={onSubmit}
-              style={{ display: "grid", gap: "0.75rem" }}
-            >
-              {mode === "register" && (
-                <>
-                  <div style={{ display: "grid", gap: 4 }}>
-                    <label htmlFor="fullName" style={{ fontSize: 13 }}>
-                      Full name
-                    </label>
+        <div style={topRight}>
+          {authUser ? (
+            <>
+              <div style={userBadge}>
+                <span style={{ fontWeight: 600 }}>{authUser.username}</span>
+                <span style={userRole}>{authUser.role || "user"}</span>
+              </div>
+              <button onClick={handleLogout} style={secondaryButton}>
+                Logout
+              </button>
+            </>
+          ) : (
+            <span style={{ fontSize: 13, color: "#9ca3af" }}>
+              Sign in to upload and manage videos
+            </span>
+          )}
+        </div>
+      </header>
+
+      <div style={layout}>
+        {/* Sidebar */}
+        <aside style={sidebar}>
+          <div style={sidebarSection}>
+            <SidebarItem
+              label="Home"
+              active={view === "home"}
+              onClick={() => setView("home")}
+            />
+            <SidebarItem
+              label="Subscriptions"
+              active={view === "subscriptions"}
+              onClick={() => {
+                setView("subscriptions");
+                loadMySubscriptions();
+              }}
+            />
+            <SidebarItem label="Library" />
+          </div>
+          <div style={sidebarSection}>
+            <div style={sidebarHeading}>Account</div>
+            {authUser ? (
+              <>
+                <SidebarItem label={`Signed in as ${authUser.username}`} />
+                <SidebarItem
+                  label={`Role: ${authUser.role || "user"}`}
+                  subtle
+                />
+              </>
+            ) : (
+              <SidebarItem label="Guest" subtle />
+            )}
+          </div>
+        </aside>
+
+        {/* Main content */}
+        <main style={main}>
+          {/* Auth or upload bar */}
+          {!authUser ? (
+            <section style={card}>
+              <div style={cardHeader}>
+                <h2 style={cardTitle}>Welcome to PlayNow</h2>
+                <div style={pillSwitch}>
+                  <button
+                    onClick={() => setAuthMode("login")}
+                    style={{
+                      ...pillButton,
+                      ...(authMode === "login" ? pillButtonActive : {}),
+                    }}
+                  >
+                    Login
+                  </button>
+                  <button
+                    onClick={() => setAuthMode("register")}
+                    style={{
+                      ...pillButton,
+                      ...(authMode === "register" ? pillButtonActive : {}),
+                    }}
+                  >
+                    Register
+                  </button>
+                </div>
+              </div>
+
+              <form
+                onSubmit={authMode === "register" ? handleRegister : handleLogin}
+                style={formGrid}
+              >
+                {authMode === "register" && (
+                  <>
+                    <FormField label="Full name" name="fullName">
+                      <input
+                        name="fullName"
+                        value={authForm.fullName}
+                        onChange={handleAuthChange}
+                        style={input}
+                        required
+                      />
+                    </FormField>
+                    <FormField label="Username" name="username">
+                      <input
+                        name="username"
+                        value={authForm.username}
+                        onChange={handleAuthChange}
+                        style={input}
+                        required
+                      />
+                    </FormField>
+                  </>
+                )}
+
+                <FormField label="Email" name="email">
+                  <input
+                    type="email"
+                    name="email"
+                    value={authForm.email}
+                    onChange={handleAuthChange}
+                    style={input}
+                    required
+                  />
+                </FormField>
+                <FormField label="Password" name="password">
+                  <input
+                    type="password"
+                    name="password"
+                    value={authForm.password}
+                    onChange={handleAuthChange}
+                    style={input}
+                    required
+                  />
+                </FormField>
+
+                <button type="submit" style={primaryButton}>
+                  {authMode === "login" ? "Login" : "Create account"}
+                </button>
+              </form>
+            </section>
+          ) : (
+            showUploadPanel && (
+              <section style={card}>
+                <div style={cardHeader}>
+                  <h2 style={cardTitle}>Upload video</h2>
+                  <span style={mutedText}>
+                    Creator / admin only. New uploads appear in the feed for
+                    everyone.
+                  </span>
+                </div>
+                <form onSubmit={handleVideoUpload} style={uploadGrid}>
+                  <FormField label="Title" name="title">
                     <input
-                      id="fullName"
-                      name="fullName"
-                      value={form.fullName}
-                      onChange={handleChange}
-                      style={inputStyle}
+                      name="title"
+                      value={upload.title}
+                      onChange={handleUploadChange}
+                      style={input}
                       required
                     />
-                  </div>
-                  <div style={{ display: "grid", gap: 4 }}>
-                    <label htmlFor="username" style={{ fontSize: 13 }}>
-                      Username
-                    </label>
+                  </FormField>
+                  <FormField label="Description" name="description">
                     <input
-                      id="username"
-                      name="username"
-                      value={form.username}
-                      onChange={handleChange}
-                      style={inputStyle}
+                      name="description"
+                      value={upload.description}
+                      onChange={handleUploadChange}
+                      style={input}
                       required
                     />
-                  </div>
-                </>
-              )}
-
-              <div style={{ display: "grid", gap: 4 }}>
-                <label htmlFor="email" style={{ fontSize: 13 }}>
-                  Email
-                </label>
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  value={form.email}
-                  onChange={handleChange}
-                  style={inputStyle}
-                  required
-                />
-              </div>
-
-              <div style={{ display: "grid", gap: 4 }}>
-                <label htmlFor="password" style={{ fontSize: 13 }}>
-                  Password
-                </label>
-                <input
-                  id="password"
-                  name="password"
-                  type="password"
-                  value={form.password}
-                  onChange={handleChange}
-                  style={inputStyle}
-                  required
-                />
-              </div>
-
-              <button
-                type="submit"
-                style={{
-                  marginTop: "0.75rem",
-                  padding: "0.6rem 1rem",
-                  borderRadius: "999px",
-                  border: "none",
-                  background: "#2563eb",
-                  color: "#f9fafb",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                {mode === "login" ? "Login" : "Register"}
-              </button>
-            </form>
-          </>
-        ) : (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div
-              style={{
-                padding: 12,
-                border: "1px solid #1f2937",
-                borderRadius: 12,
-                background: "#020617",
-              }}
-            >
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <span style={pillStyle}>
-                  user: <b>{authUser?.username}</b>
-                </span>
-                <span style={pillStyle}>
-                  role: <b>{authUser?.role || "user"}</b>
-                </span>
-              </div>
-              <p style={{ marginTop: 10, marginBottom: 0, color: "#9ca3af" }}>
-                To upload videos, set your role in MongoDB to{" "}
-                <code>creator</code> or <code>admin</code>.
-              </p>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 16,
-              }}
-            >
-              <div
-                style={{
-                  padding: 16,
-                  border: "1px solid #1f2937",
-                  borderRadius: 12,
-                }}
-              >
-                <h2 style={{ marginTop: 0, marginBottom: 12, fontSize: 18 }}>
-                  Upload video
-                </h2>
-                <form
-                  onSubmit={handleVideoUpload}
-                  style={{ display: "grid", gap: 10 }}
-                >
-                  <input
-                    name="title"
-                    placeholder="Title"
-                    value={upload.title}
-                    onChange={handleUploadChange}
-                    style={inputStyle}
-                  />
-                  <input
-                    name="description"
-                    placeholder="Description"
-                    value={upload.description}
-                    onChange={handleUploadChange}
-                    style={inputStyle}
-                  />
-                  <input
-                    name="duration"
-                    placeholder="Duration (seconds)"
-                    value={upload.duration}
-                    onChange={handleUploadChange}
-                    style={inputStyle}
-                  />
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <label style={{ fontSize: 13, color: "#cbd5e1" }}>
-                      videoFile
-                    </label>
+                  </FormField>
+                  <FormField label="Duration (seconds)" name="duration">
                     <input
-                      name="videoFile"
+                      name="duration"
+                      value={upload.duration}
+                      onChange={handleUploadChange}
+                      style={input}
+                      required
+                    />
+                  </FormField>
+                  <FormField label="Video file" name="videoFile">
+                    <input
                       type="file"
+                      name="videoFile"
                       accept="video/*"
                       onChange={handleUploadChange}
-                      style={fileStyle}
+                      style={fileInput}
+                      required
                     />
-                  </div>
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <label style={{ fontSize: 13, color: "#cbd5e1" }}>
-                      thumbnail
-                    </label>
+                  </FormField>
+                  <FormField label="Thumbnail" name="thumbnail">
                     <input
-                      name="thumbnail"
                       type="file"
+                      name="thumbnail"
                       accept="image/*"
                       onChange={handleUploadChange}
-                      style={fileStyle}
+                      style={fileInput}
+                      required
                     />
-                  </div>
-                  <button type="submit" style={primaryButtonStyle}>
+                  </FormField>
+                  <button type="submit" style={primaryButton}>
                     Upload
                   </button>
                 </form>
-              </div>
+              </section>
+            )
+          )}
 
-              <div
-                style={{
-                  padding: 16,
-                  border: "1px solid #1f2937",
-                  borderRadius: 12,
-                }}
-              >
-                <h2 style={{ marginTop: 0, marginBottom: 12, fontSize: 18 }}>
-                  Videos
-                </h2>
-                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <input
-                    value={page}
-                    onChange={(e) => setPage(Number(e.target.value) || 1)}
-                    style={{ ...inputStyle, width: 90 }}
-                    placeholder="page"
-                  />
-                  <input
-                    value={limit}
-                    onChange={(e) => setLimit(Number(e.target.value) || 10)}
-                    style={{ ...inputStyle, width: 90 }}
-                    placeholder="limit"
-                  />
-                  <button onClick={fetchVideos} style={secondaryButtonStyle}>
-                    Load
-                  </button>
+          {view === "home" ? (
+            <>
+              {selectedVideoId && (
+                <section style={card}>
+                  <div style={cardHeader}>
+                    <h2 style={cardTitle}>Video</h2>
+                    <button
+                      onClick={() => {
+                        setSelectedVideoId(null);
+                        setSelectedVideo(null);
+                        setComments([]);
+                      }}
+                      style={secondaryButton}
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  {selectedVideo ? (
+                    <div style={{ display: "grid", gap: 12 }}>
+                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                        <a
+                          href={selectedVideo.videoFile}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: "#93c5fd" }}
+                        >
+                          Open video
+                        </a>
+                        <span style={mutedText}>
+                          Likes: <b>{likesCount}</b>
+                        </span>
+                        <button onClick={toggleLike} style={secondaryButton}>
+                          {liked ? "Unlike" : "Like"}
+                        </button>
+
+                        {selectedVideo?.owner?._id &&
+                          authUser?._id !== selectedVideo.owner._id && (
+                            <>
+                              <button
+                                onClick={() =>
+                                  channelSubscribed
+                                    ? unsubscribeFromChannel(selectedVideo.owner._id)
+                                    : subscribeToChannel(selectedVideo.owner._id)
+                                }
+                                style={secondaryButton}
+                              >
+                                {channelSubscribed ? "Subscribed" : "Subscribe"}
+                              </button>
+                              <span style={mutedText}>
+                                Subscribers: <b>{channelSubscribersCount}</b>
+                              </span>
+                            </>
+                          )}
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>
+                          {selectedVideo.title}
+                        </div>
+                        <div style={mutedText}>{selectedVideo.description}</div>
+                      </div>
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div style={{ fontWeight: 600 }}>Comments</div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <input
+                            value={commentDraft}
+                            onChange={(e) => setCommentDraft(e.target.value)}
+                            style={{ ...input, flex: 1 }}
+                            placeholder="Add a comment..."
+                          />
+                          <button onClick={addComment} style={secondaryButton}>
+                            Post
+                          </button>
+                        </div>
+                        {comments?.length ? (
+                          <div style={{ display: "grid", gap: 8 }}>
+                            {comments.map((c) => {
+                              const canDelete =
+                                authUser &&
+                                (authUser.role === "admin" ||
+                                  authUser._id === c?.user?._id);
+                              return (
+                                <div
+                                  key={c._id}
+                                  style={{
+                                    border: "1px solid #111827",
+                                    borderRadius: 12,
+                                    padding: 10,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      justifyContent: "space-between",
+                                      gap: 8,
+                                    }}
+                                  >
+                                    <div style={{ fontSize: 13 }}>
+                                      <b>{c?.user?.username || "user"}</b>{" "}
+                                      <span style={{ color: "#6b7280" }}>
+                                        {new Date(c.createdAt).toLocaleString()}
+                                      </span>
+                                    </div>
+                                    {canDelete && (
+                                      <button
+                                        onClick={() => deleteComment(c._id)}
+                                        style={secondaryButton}
+                                      >
+                                        Delete
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div style={{ marginTop: 6, fontSize: 13 }}>
+                                    {c.content}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div style={mutedText}>No comments yet.</div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={mutedText}>Loading...</div>
+                  )}
+                </section>
+              )}
+
+              {/* Video grid */}
+              <section style={card}>
+                <div style={cardHeader}>
+                  <h2 style={cardTitle}>Videos</h2>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      onClick={() => fetchVideos(Math.max(1, page - 1))}
+                      style={secondaryButton}
+                    >
+                      ◀
+                    </button>
+                    <span style={mutedText}>Page {page}</span>
+                    <button
+                      onClick={() => fetchVideos(page + 1)}
+                      style={secondaryButton}
+                    >
+                      ▶
+                    </button>
+                    <button
+                      onClick={() => fetchVideos(1)}
+                      style={secondaryButton}
+                    >
+                      Refresh
+                    </button>
+                  </div>
                 </div>
 
-                {videos?.docs?.length ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {videos.docs.map((v) => (
-                      <div
-                        key={v._id}
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "96px 1fr",
-                          gap: 10,
-                          padding: 10,
-                          borderRadius: 12,
-                          border: "1px solid #1f2937",
-                        }}
-                      >
-                        <a href={v.videoFile} target="_blank" rel="noreferrer">
-                          <img
-                            src={v.thumbnail}
-                            alt={v.title}
-                            style={{
-                              width: 96,
-                              height: 54,
-                              objectFit: "cover",
-                              borderRadius: 10,
-                              display: "block",
-                            }}
-                          />
-                        </a>
-                        <div>
-                          <div style={{ fontWeight: 700 }}>{v.title}</div>
-                          <div style={{ fontSize: 13, color: "#9ca3af" }}>
-                            id: <code>{v._id}</code>
+                {videos && videos.length > 0 ? (
+                  <div style={videoGrid}>
+                    {videos.map((v) => (
+                      <article key={v._id} style={videoCard}>
+                        <button
+                          onClick={() => openVideo(v._id)}
+                          style={{ padding: 0, border: "none", background: "transparent" }}
+                          title="Open"
+                        >
+                          <div style={thumbWrapper}>
+                            <img src={v.thumbnail} alt={v.title} style={thumbImage} />
+                          </div>
+                        </button>
+                        <div style={videoMeta}>
+                          <div style={videoTitle}>{v.title}</div>
+                          <div style={videoDescription}>{v.description}</div>
+                          <div style={videoMetaBottom}>
+                            <span>{Math.round(v.duration)}s</span>
+                            <span>Views: {v.views ?? 0}</span>
                           </div>
                         </div>
-                      </div>
+                      </article>
                     ))}
                   </div>
                 ) : (
-                  <p style={{ margin: 0, color: "#9ca3af" }}>
-                    Click “Load” to fetch videos.
+                  <p style={mutedText}>
+                    No videos yet. Once creators upload, they will appear here for
+                    everyone.
                   </p>
                 )}
+              </section>
+            </>
+          ) : (
+            <section style={card}>
+              <div style={cardHeader}>
+                <h2 style={cardTitle}>My subscriptions</h2>
+                <button onClick={loadMySubscriptions} style={secondaryButton}>
+                  Refresh
+                </button>
               </div>
-            </div>
-          </div>
-        )}
 
-        {message && (
-          <p style={{ marginTop: "1rem", fontSize: 14, color: "#e5e7eb" }}>
-            {message}
-          </p>
-        )}
+              {!authUser ? (
+                <p style={mutedText}>Login to see your subscriptions.</p>
+              ) : mySubscriptions?.length ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {mySubscriptions.map((s) => (
+                    <div
+                      key={s._id}
+                      style={{
+                        border: "1px solid #111827",
+                        borderRadius: 12,
+                        padding: 12,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        alignItems: "center",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 700 }}>
+                          {s?.channel?.username || "channel"}
+                        </div>
+                        <div style={mutedText}>{s?.channel?.fullName || ""}</div>
+                      </div>
+                      <button
+                        onClick={() => unsubscribeFromChannel(s?.channel?._id)}
+                        style={secondaryButton}
+                      >
+                        Unsubscribe
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={mutedText}>You haven’t subscribed to any channels yet.</p>
+              )}
+            </section>
+          )}
+
+          {message && (
+            <p style={{ ...mutedText, marginTop: 8 }}>Status: {message}</p>
+          )}
+        </main>
       </div>
     </div>
   );
 }
 
-const inputStyle = {
-  padding: "0.5rem 0.75rem",
-  borderRadius: "0.5rem",
+function FormField({ label, name, children }) {
+  return (
+    <label style={field}>
+      <span style={fieldLabel}>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function SidebarItem({ label, active, subtle, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        padding: "0.35rem 0.75rem",
+        borderRadius: 999,
+        fontSize: 13,
+        cursor: "pointer",
+        color: subtle ? "#9ca3af" : "#e5e7eb",
+        background: active ? "#1f2937" : "transparent",
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+// Layout styles
+const appShell = {
+  minHeight: "100vh",
+  display: "flex",
+  flexDirection: "column",
+  background: "#020617",
+  color: "#e5e7eb",
+  fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+};
+
+const topBar = {
+  height: 56,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "0 1.5rem",
+  borderBottom: "1px solid #111827",
+  background: "#020617e6",
+  backdropFilter: "blur(10px)",
+  position: "sticky",
+  top: 0,
+  zIndex: 10,
+};
+
+const topLeft = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const logoCircle = {
+  width: 28,
+  height: 28,
+  borderRadius: "999px",
+  background: "#dc2626",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: 14,
+};
+
+const logoText = {
+  fontWeight: 700,
+  fontSize: 18,
+};
+
+const searchBox = {
+  flex: 1,
+  maxWidth: 480,
+  display: "flex",
+  alignItems: "center",
+};
+
+const searchInput = {
+  flex: 1,
+  padding: "0.4rem 0.75rem",
+  borderRadius: "999px 0 0 999px",
   border: "1px solid #1f2937",
   background: "#020617",
   color: "#e5e7eb",
   outline: "none",
+  fontSize: 13,
 };
 
-const fileStyle = {
+const searchButton = {
+  padding: "0.4rem 0.75rem",
+  borderRadius: "0 999px 999px 0",
+  border: "1px solid #1f2937",
+  borderLeft: "none",
+  background: "#111827",
   color: "#e5e7eb",
+  cursor: "pointer",
 };
 
-const primaryButtonStyle = {
+const topRight = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  marginLeft: 16,
+};
+
+const layout = {
+  display: "grid",
+  gridTemplateColumns: "220px minmax(0, 1fr)",
+  gap: 0,
+  padding: "1rem 1.5rem 2rem",
+};
+
+const sidebar = {
+  paddingRight: 16,
+  borderRight: "1px solid #111827",
+  display: "flex",
+  flexDirection: "column",
+  gap: 16,
+};
+
+const sidebarSection = {
+  display: "grid",
+  gap: 4,
+};
+
+const sidebarHeading = {
+  fontSize: 12,
+  textTransform: "uppercase",
+  letterSpacing: 0.08,
+  color: "#6b7280",
+  marginBottom: 4,
+};
+
+const main = {
+  paddingLeft: 24,
+  display: "grid",
+  gap: 16,
+};
+
+// Card / form styles
+const card = {
+  borderRadius: 16,
+  border: "1px solid #111827",
+  background: "#020617",
+  padding: 16,
+  boxShadow: "0 16px 40px rgba(0,0,0,0.45)",
+};
+
+const cardHeader = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  marginBottom: 12,
+};
+
+const cardTitle = {
+  fontSize: 18,
+  fontWeight: 600,
+  margin: 0,
+};
+
+const formGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 12,
+};
+
+const uploadGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 12,
+};
+
+const field = {
+  display: "grid",
+  gap: 4,
+  fontSize: 13,
+};
+
+const fieldLabel = {
+  color: "#94a3b8",
+};
+
+const input = {
+  padding: "0.5rem 0.75rem",
+  borderRadius: 10,
+  border: "1px solid #1f2937",
+  background: "#020617",
+  color: "#e5e7eb",
+  outline: "none",
+  fontSize: 13,
+};
+
+const fileInput = {
+  color: "#e5e7eb",
+  fontSize: 13,
+};
+
+const primaryButton = {
+  gridColumn: "1 / -1",
   marginTop: 4,
-  padding: "0.6rem 1rem",
-  borderRadius: "999px",
+  padding: "0.6rem 1.2rem",
+  borderRadius: 999,
   border: "none",
   background: "#2563eb",
   color: "#f9fafb",
   fontWeight: 600,
   cursor: "pointer",
+  justifySelf: "flex-start",
 };
 
-const secondaryButtonStyle = {
-  padding: "0.5rem 0.8rem",
-  borderRadius: "999px",
+const secondaryButton = {
+  padding: "0.35rem 0.9rem",
+  borderRadius: 999,
   border: "1px solid #1f2937",
   background: "transparent",
   color: "#e5e7eb",
   cursor: "pointer",
+  fontSize: 12,
 };
 
-const pillStyle = {
+const pillSwitch = {
+  display: "flex",
+  borderRadius: 999,
   border: "1px solid #1f2937",
-  padding: "0.25rem 0.6rem",
-  borderRadius: "999px",
-  color: "#e5e7eb",
+  padding: 3,
+  background: "#020617",
+};
+
+const pillButton = {
+  flex: 1,
+  padding: "0.25rem 0.75rem",
+  borderRadius: 999,
+  border: "none",
+  background: "transparent",
+  color: "#9ca3af",
+  fontSize: 13,
+  cursor: "pointer",
+};
+
+const pillButtonActive = {
+  background: "#2563eb",
+  color: "#f9fafb",
+};
+
+const mutedText = {
+  fontSize: 13,
+  color: "#9ca3af",
+};
+
+// Video grid
+const videoGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+  gap: 16,
+  marginTop: 8,
+};
+
+const videoCard = {
+  borderRadius: 16,
+  border: "1px solid #111827",
+  overflow: "hidden",
+  background: "#020617",
+  display: "flex",
+  flexDirection: "column",
+};
+
+const thumbWrapper = {
+  position: "relative",
+  paddingTop: "56.25%", // 16:9
+  background: "#020617",
+};
+
+const thumbImage = {
+  position: "absolute",
+  inset: 0,
+  width: "100%",
+  height: "100%",
+  objectFit: "cover",
+};
+
+const videoMeta = {
+  padding: "0.6rem 0.7rem 0.7rem",
+  display: "grid",
+  gap: 4,
+};
+
+const videoTitle = {
+  fontSize: 14,
+  fontWeight: 600,
+};
+
+const videoDescription = {
+  fontSize: 12,
+  color: "#9ca3af",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const videoMetaBottom = {
+  display: "flex",
+  justifyContent: "space-between",
+  fontSize: 11,
+  color: "#6b7280",
+};
+
+const userBadge = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "flex-end",
+  fontSize: 12,
+  lineHeight: 1.3,
+};
+
+const userRole = {
+  padding: "0.1rem 0.4rem",
+  borderRadius: 999,
+  border: "1px solid #1f2937",
+  color: "#9ca3af",
+  marginTop: 2,
 };
 
 export default App;
